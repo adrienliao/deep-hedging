@@ -20,7 +20,7 @@ class Config:
     n_steps: int = 30
     cost: float = 0.0
     alpha: float = 0.95
-    batch: int = 8192
+    batch: int = 4096
     iters: int = 1500
     lr: float = 3e-3
     seed: int = 0
@@ -31,7 +31,15 @@ def train(cfg: Config, verbose: bool = False):
     gen = torch.Generator().manual_seed(cfg.seed)
     model = DeepHedger(cfg.K, cfg.sigma, cfg.T)
     risk = CVaRLoss(cfg.alpha)
-    opt = torch.optim.Adam(list(model.parameters()) + list(risk.parameters()), lr=cfg.lr)
+    # start the VaR threshold at the empirical quantile of an untrained hedge,
+    # otherwise the first few hundred steps are spent just moving w into place
+    with torch.no_grad():
+        paths = simulate_gbm(cfg.batch, cfg.n_steps, cfg.S0, cfg.sigma, cfg.T, generator=gen)
+        risk.w.fill_(torch.quantile(-hedge_pnl(paths, model(paths), cfg.K, cfg.cost), cfg.alpha))
+    opt = torch.optim.Adam([
+        {"params": model.parameters(), "lr": cfg.lr},
+        {"params": risk.parameters(), "lr": 10 * cfg.lr},
+    ])
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, cfg.iters)
 
     history, t0 = [], time.time()
